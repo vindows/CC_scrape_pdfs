@@ -1,52 +1,43 @@
 import requests
-from bs4 import BeautifulSoup
-from warcio.archiveiterator import ArchiveIterator
-import wget
 import sys
-import io
+import json
+import wget
+from urllib.parse import urlencode
 
-COMMONCRAWL_URL = "https://commoncrawl.s3.amazonaws.com/"
+CC_CDX_API = "http://index.commoncrawl.org/cdx/search/cdx"
 
-def get_index_files():
-    response = requests.get(COMMONCRAWL_URL)
-    soup = BeautifulSoup(response.text, "lxml-xml")
-    index_files = []
-    for link in soup.find_all("Key"):
-        href = link.text
-        if href.endswith("warc.gz"):
-            index_files.append(COMMONCRAWL_URL + href)
-    return index_files
+def get_pdf_links(limit):
+    params = {
+        "url": "*",
+        "output": "json",
+        "limit": limit,
+        "filter": "mime:application/pdf",
+        "collapse": "urlkey",
+        "showNumPages": "true",
+        "fl": "url"
+    }
+    query_url = CC_CDX_API + "?" + urlencode(params)
 
-def download_pdf_links(pdf_links, output_folder):
+    response = requests.get(query_url)
+    pdf_links = set()
+    for line in response.iter_lines():
+        line = line.strip()
+        if line:
+            try:
+                data = json.loads(line)
+                pdf_links.add(data)
+            except json.JSONDecodeError as e:
+                print(f"Skipping line due to JSON decoding error: {e}")
+                continue
+
+    return pdf_links
+
+def download_pdfs(pdf_links, output_folder):
     for link in pdf_links:
         try:
             wget.download(link, out=output_folder)
         except Exception as e:
             print(f"Error downloading {link}: {e}")
-
-def process_warc_record(record, pdf_links, limit):
-    if record.rec_type == "response":
-        url = record.rec_headers.get_header("WARC-Target-URI")
-        if url.endswith(".pdf"):
-            pdf_links.add(url)
-            return len(pdf_links) >= limit
-    return False
-
-def scrape_pdfs(index_files, output_folder, limit=None):
-    pdf_links = set()
-    for index_file in index_files:
-        try:
-            response = requests.get(index_file, stream=True)
-            for record in ArchiveIterator(response.raw, arc2warc=True):
-                if process_warc_record(record, pdf_links, limit):
-                    break
-        except Exception as e:
-            print(f"Error processing {index_file}: {e}")
-
-        if limit and len(pdf_links) >= limit:
-            break
-
-    download_pdf_links(pdf_links, output_folder)
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
@@ -56,5 +47,5 @@ if __name__ == "__main__":
     output_folder = sys.argv[1]
     pdf_limit = int(sys.argv[2])
 
-    index_files = get_index_files()
-    scrape_pdfs(index_files, output_folder, pdf_limit)
+    pdf_links = get_pdf_links(pdf_limit)
+    download_pdfs(pdf_links, output_folder)
